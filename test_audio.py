@@ -94,7 +94,7 @@ def step2_test_gptsovits():
         print("  >> Saltando test de sintesis de voz.")
         return None
 
-    ref_audio = "C:/Users/Usuario/Desktop/Aprte/my-ai-vtuber/aiko_ref.mp3"
+    ref_audio = os.path.abspath("aiko_ref.mp3")
     if not os.path.exists(ref_audio):
         print(f"  Audio de referencia no encontrado: {ref_audio}")
         return None
