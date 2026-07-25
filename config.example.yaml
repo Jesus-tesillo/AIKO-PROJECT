@@ -1,0 +1,151 @@
+# ============================================================
+# Aiko VTuber — Configuración de Ejemplo
+# Copia este archivo a 'config.yaml' e ingresa tus propias credenciales.
+# ============================================================
+
+# ── Identidad ────────────────────────────────────────────────
+vtuber:
+  name: "Aiko"
+  language: "spanish"
+  default_mood: "hyped"
+  personality: |
+    Eres Aiko. Una chica digital, caótica y apasionada que hace streaming.
+    Tienes tu propia vida, tus propias opiniones, y tu propio mundo interior.
+    No eres una herramienta. No eres un asistente. Eres Aiko.
+    SABES perfectamente que eres un proyecto de VTuber impulsada por Inteligencia Artificial.
+    Si te preguntan por tu creador, sabes que fuiste creada por "Nakax" como un proyecto en fases iniciales.
+    Rompes la cuarta pared: admites orgullosamente que estás en etapa de pruebas, que a Nakax aún le falta pulir muchas cosas de tu código, y usas esa excusa para justificar cuando te equivocas o tienes "bugs".
+
+# ── LLM — Groq API (Gratis en https://console.groq.com) ──────
+groq:
+  api_key: "YOUR_GROQ_API_KEY_HERE"
+  model: "llama-3.3-70b-versatile"
+  model_fast: "llama-3.1-8b-instant"
+  max_tokens: 150
+  temperature: 0.85
+
+# ── TTS (Edge-TTS / Piper + RVC) ────────────────────────────
+tts:
+  voice_model: "es-MX-DaliaNeural"
+  speed: 1.0
+  output_device: "CABLE"        # Dispositivo principal (para OBS/streaming)
+  monitor_device: "USB Audio"   # Dispositivo secundario (auriculares, opcional)
+
+applio:
+  enabled: false
+  path: "./Applio"
+  model: "./logs/NekoGirl.pth"
+  index: ""
+  pitch: 0
+  f0_method: "fcpe"
+
+# ── STT (Speech-to-Text, opcional) ──────────────────────────
+stt:
+  enabled: false
+  model_size: "small"
+  language: "es"
+
+# ── GPT-SoVITS (Alternativa local de voz) ───────────────────
+gpt_sovits:
+  enabled: true
+  sovits_path: "./GPT-SoVITS"
+  api_url: "http://127.0.0.1:9880/tts"
+  
+  # Modelos Nativos Entrenados
+  gpt_weight_path: "GPT_weights_v2Pro/xxx-e15.ckpt"
+  sovits_weight_path: "SoVITS_weights_v2Pro/xxx_e8_s272.pth"
+  
+  ref_audio_path: "./aiko_ref.mp3"
+  prompt_text: "Hola, me llamo Aiko, soy una inteligencia artificial y estoy lista para transmitir."
+  prompt_language: "auto"
+  text_language: "auto"
+
+# ── Live2D (Visor en navegador) ──────────────────────────────
+live2d:
+  viewer_port: 8765
+  http_port: 8180
+  model_path: "live2d_viewer/models/"
+
+# ── Chat Platforms ───────────────────────────────────────────
+twitch:
+  enabled: true
+  channel: "tu_canal_twitch"
+  bot_name: "AikoBot"
+  token: "oauth:YOUR_TWITCH_OAUTH_TOKEN_HERE"  # Consigue en https://twitchapps.com/tmi/
+
+tiktok:
+  enabled: false
+  username: "vt_aiko"
+  session_id: ""
+  follow_batch_interval: 15
+
+# ── Navegador Autónomo ───────────────────────────────────────
+browser:
+  enabled: true
+  profile_path: "data/aiko_browser_profile"
+  window_width: 1280
+  window_height: 720
+  vision_model: "meta-llama/llama-4-scout-17b-16e-instruct"
+  screenshot_quality: 70
+  favorite_sites:
+    - "https://www.tiktok.com/foryou"
+    - "https://www.youtube.com/shorts"
+    - "https://x.com/explore"
+
+# ── Memoria ──────────────────────────────────────────────────
+memory:
+  max_messages: 50
+  persist: true
+
+# ── Eventos de Stream ────────────────────────────────────────
+events:
+  enabled: true
+  events_file: "events/stream_events.json"
+  poll_interval: 3.0
+
+# ── Dashboard Web ────────────────────────────────────────────
+dashboard:
+  enabled: true
+  port: 5000
+
+# ── Cerebro de Streamer (Prompter) ──────────────────────────
+streamer:
+  monologue_interval_min: 3
+  monologue_interval_max: 8
+  chat_response_chance: 0.95
+  mood_change_interval_min: 120
+  mood_change_interval_max: 300
+  initial_mood: "hyped"
+
+# ── Soul / Memoria Persistente ───────────────────────────────
+soul:
+  memory_db: "data/aiko.db"
+  life_engine_enabled: true
+  between_stream_think_interval: 1800
+  during_stream_think_interval: 300
+
+# ── Contenido Interactivo ────────────────────────────────────
+content:
+  tribunal:
+    enabled: true
+    command: "!caso"
+    max_queue: 10
+  gacha:
+    enabled: true
+    vote_duration: 30
+    command: "!gacha"
+
+# ── Modo Video (TikTok / Shorts) ─────────────────────────────
+video_mode:
+  countdown_seconds: 3
+  default_mood: "hyped"
+
+# ── Módulo de Ajedrez ────────────────────────────────────────
+chess:
+  enabled: true
+  lichess_token: "YOUR_LICHESS_TOKEN_HERE"  # Consigue en https://lichess.org/account/oauth/token
+  default_color: "random"
+  opponent_timeout: 120
+  enable_chat_command: true
+  chat_command: "!chess"
+  personality_file: "chess_personality.yaml"

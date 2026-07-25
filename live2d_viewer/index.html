@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Aiko Live2D Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent !important;
+    overflow: hidden;
+  }
+  
+  canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  #status {
+    position: fixed;
+    bottom: 8px;
+    right: 8px;
+    font-family: monospace;
+    font-size: 11px;
+    color: rgba(255,255,255,0.5);
+    background: rgba(0,0,0,0.3);
+    padding: 3px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  #no-model {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-family: sans-serif;
+    font-size: 18px;
+    text-align: center;
+    background: rgba(0,0,0,0.5);
+    padding: 20px;
+    border-radius: 10px;
+  }
+</style>
+</head>
+<body>
+<div id="status">⟳ connecting...</div>
+<div id="no-model">
+  📁 Place your Live2D model in<br>
+  <code>live2d_viewer/models/</code><br><br>
+  <small>Needs a .model3.json file</small>
+</div>
+
+<!-- Core dependencies -->
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@7.x/dist/pixi.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display-lipsyncpatch/dist/cubism4.min.js"></script>
+
+<script>
+// ============================================================
+// AIKO LIVE2D VIEWER — Full Parameter Control + Animation Engine
+// Controlled by Python via WebSocket on port 8765
+// OBS: Browser Source at http://localhost:8180/index.html
+//      Width: 1920, Height: 1080, transparent background
+// ============================================================
+
+const WS_PORT = 8765;
+const RECONNECT_INTERVAL = 2000;
+
+// PixiJS Application — transparent background for OBS
+const app = new PIXI.Application({
+    width: window.innerWidth   || 1920,
+    height: window.innerHeight || 1080,
+    backgroundAlpha: 0,
+    resolution: 1,
+    autoDensity: true,
+    antialias: true,
+    transparent: true,
+});
+document.body.appendChild(app.view);
+
+window.addEventListener('resize', () => {
+    app.renderer.resize(window.innerWidth, window.innerHeight);
+    if (currentModel) repositionModel(currentModel);
+});
+
+// ── Mouse Tracking (model follows cursor) ──
+let mouseX = 0.5;  // normalized 0-1 (center)
+let mouseY = 0.5;
+window.addEventListener('mousemove', (e) => {
+    mouseX = e.clientX / window.innerWidth;
+    mouseY = e.clientY / window.innerHeight;
+});
+
+// ============================================================
+// MODEL MANAGEMENT
+// ============================================================
+
+let currentModel = null;
+let modelLoaded = false;
+let isModelLoading = false;
+
+async function loadModel(modelPath) {
+    if (isModelLoading) return;
+    isModelLoading = true;
+    
+    try {
+        if (currentModel) {
+            app.stage.removeChild(currentModel);
+            currentModel.destroy();
+            currentModel = null;
+        }
+
+        setStatus('⟳ Loading model...');
+
+        const model = await PIXI.live2d.Live2DModel.from(modelPath, {
+            autoInteract: false,
+        });
+
+        app.stage.addChild(model);
+        currentModel = model;
+        modelLoaded = true;
+
+        repositionModel(model);
+
+        // Let the model's idle motion (DaiJi.motion3.json) play naturally.
+        // Expressions (.exp3.json) ADD on top of the idle motion via blend mode.
+        // AnimationEngine only handles: lip sync, mouse tracking, head tilt.
+
+        // Initialize animation engine (lightweight — only lip sync + mouse + head)
+        AnimationEngine.init(model);
+        AnimationEngine.startIdleLoop();
+
+        // Hook into the model's internal update to force lip-sync AFTER
+        // expression evaluation. This ensures the mouth keeps moving
+        // even while native .exp3.json expressions are active.
+        const origUpdate = model.internalModel.updateWebGLContext;
+        if (model.internalModel.motionManager) {
+            const origMotionUpdate = model.internalModel.motionManager.update;
+            model.internalModel.motionManager.update = function(m, now) {
+                const result = origMotionUpdate.call(this, m, now);
+                // After motions+expressions have been applied, force lip-sync
+                if (AnimationEngine.isTalking && AnimationEngine.mouthVolumeSmooth > 0) {
+                    const vol = Math.min(AnimationEngine.mouthVolumeSmooth * 4.0, 1.0);
+                    try {
+                        model.internalModel.coreModel.setParameterValueById(
+                            'ParamMouthOpenY', vol * 0.85
+                        );
+                    } catch(e) {}
+                }
+                return result;
+            };
+            console.log('[Viewer] ✓ Lip-sync post-hook installed');
+        }
+
+        document.getElementById('no-model').style.display = 'none';
+        setStatus('✓ ' + modelPath.split('/').pop().replace('.model3.json',''));
+
+        console.log('[Viewer] Model loaded:', modelPath);
+        const motions = getAvailableMotions(model);
+        const expressions = getAvailableExpressions(model);
+        console.log('[Viewer] Available motions:', motions);
+        console.log('[Viewer] Available expressions:', expressions);
+
+        if (wsReady && ws) {
+            sendBack({
+                type: 'model_info',
+                motions: motions,
+                expressions: expressions,
+            });
+        }
+    } catch(e) {
+        console.error('[Viewer] Failed to load model:', e);
+        setStatus('✗ Model error');
+        document.getElementById('no-model').style.display = 'block';
+    } finally {
+        isModelLoading = false;
+    }
+}
+
+function repositionModel(model) {
+    const W = app.renderer.width;
+    const H = app.renderer.height;
+    
+    // Reset scale to 1 to measure native size
+    model.scale.set(1);
+    
+    const nativeW = model.width || 800;
+    const nativeH = model.height || 900;
+    
+    // Scale down to fit the window height, with a 5% margin.
+    // If the model is extremely wide, fit to width instead.
+    const scale = Math.min(W / nativeW, H / nativeH) * 1.0;
+    
+    model.scale.set(scale);
+    
+    // Center it
+    model.anchor.set(0.5, 0.5);
+    model.x = W * 0.5;
+    
+    // Live2D models are usually bottom-heavy (cut off at the waist).
+    // Anchoring at H * 0.6 keeps them grounded nicely.
+    model.y = H * 0.6;
+}
+
+function getAvailableMotions(model) {
+    let motions = [];
+    try {
+        // Method 1: From motionManager (runtime loaded motions)
+        if (model.internalModel.motionManager && model.internalModel.motionManager.motionGroups) {
+            motions = Object.keys(model.internalModel.motionManager.motionGroups);
+        }
+        // Method 2: From settings (model definition)
+        if (motions.length === 0) {
+            const settings = model.internalModel.settings;
+            const src = settings.motions || settings.Motions 
+                || settings.fileReferences?.motions || settings.FileReferences?.Motions 
+                || settings.json?.FileReferences?.Motions || settings.json?.fileReferences?.motions
+                || {};
+            motions = Object.keys(src);
+        }
+    } catch(e) { console.warn('[getMotions] Error:', e); }
+    return motions;
+}
+
+function getAvailableExpressions(model) {
+    let exp = [];
+    try {
+        const settings = model.internalModel.settings;
+        // Try every possible location pixi-live2d-display might store expressions
+        let raw = settings.expressions || settings.Expressions 
+            || settings.fileReferences?.expressions || settings.FileReferences?.Expressions
+            || settings.json?.FileReferences?.Expressions || settings.json?.fileReferences?.expressions
+            || [];
+        
+        // If it's an object with named groups instead of an array, flatten it
+        if (!Array.isArray(raw) && typeof raw === 'object') {
+            raw = Object.values(raw).flat();
+        }
+        
+        exp = raw.map(e => e.Name || e.name || e.Name || '').filter(Boolean);
+        
+        // Fallback: try to get from the expressionManager
+        if (exp.length === 0 && model.internalModel.motionManager) {
+            const em = model.internalModel.motionManager.expressionManager;
+            if (em && em.definitions) {
+                exp = em.definitions.map(d => d.Name || d.name || '').filter(Boolean);
+            }
+        }
+        
+        // Debug: dump settings structure to help diagnose
+        console.log('[getExpressions] settings keys:', Object.keys(settings));
+        if (settings.json) console.log('[getExpressions] settings.json keys:', Object.keys(settings.json));
+        if (settings.json?.FileReferences) console.log('[getExpressions] FileReferences keys:', Object.keys(settings.json.FileReferences));
+        console.log('[getExpressions] Found:', exp.length, 'expressions:', exp);
+    } catch(e) { console.warn('[getExpressions] Error:', e); }
+    return exp;
+}
+
+// ============================================================
+// ANIMATION ENGINE — 3 Layer System
+// Layer 1: Base idle (breathing, sway, blink, eye wander)
+// Layer 2: Emotional state (smooth lerp to target)
+// Layer 3: Instant reactions (sharp override, auto-return)
+// ============================================================
+
+const AnimationEngine = {
+    model: null,
+    t: 0,
+    currentMood: 'neutral',
+    isTalking: false,
+    currentEmotion: 'neutral',
+
+    // Current actual values (what's applied to the model right now)
+    params: {
+        headX: 0, headY: 0, headZ: 0,
+        eyeOpen: 0.85, eyeSmile: 0,
+        browForm: 0, browAngle: 0,
+        mouthOpen: 0, mouthForm: 0,
+        eyeX: 0, eyeY: 0,
+    },
+
+    // Target values (lerp destination)
+    targets: {},
+
+    // Reaction override
+    reactionActive: false,
+    reactionTargets: {},
+    reactionEndTime: 0,
+
+    // Blink state
+    blinkValue: 1.0,
+    nextBlink: Date.now() + 3000,
+    isBlinking: false,
+    blinkStart: 0,
+
+    // Eye wander
+    eyeCurrentX: 0,
+    eyeCurrentY: 0,
+    eyeTargetX: 0,
+    eyeTargetY: 0,
+    nextEyeMove: Date.now() + 2000,
+
+    // Audio-volume lip sync (receives RMS from Python)
+    mouthVolume: 0,
+    mouthVolumeSmooth: 0,
+    lastVolumeTime: 0,
+    volumeTimeout: 80,  // ms — close mouth if no volume update
+
+    // Mood intensity multipliers
+    MOOD_AMP: {
+        hyped: 2.0, gremlin: 2.5, excited: 1.8,
+        chill: 0.4, bored: 0.3, neutral: 1.0,
+        focused: 0.6, flustered: 1.4, sad: 0.5, thinking: 0.6,
+    },
+
+    // Emotional state presets — DRAMATIC values for clearly visible expressions
+    // headX/Y/Z, eyeOpen, eyeSmile, browForm/browAngle, mouthOpen, mouthForm, eyeX/Y
+    EMOTIONS: {
+        neutral:     { headX:0, headY:0, headZ:0,
+                       eyeOpen:0.85, eyeSmile:0, browForm:0, browAngle:0,
+                       mouthOpen:0, mouthForm:0, eyeX:0, eyeY:0 },
+        happy:       { headX:0.1, headY:0.15, headZ:0.1,
+                       eyeOpen:0.6, eyeSmile:1.0, browForm:0.4, browAngle:0,
+                       mouthOpen:0.2, mouthForm:1.0, eyeX:0, eyeY:0.1 },
+        laughing:    { headX:0, headY:0.3, headZ:0.2,
+                       eyeOpen:0.05, eyeSmile:1.0, browForm:0.5, browAngle:0.2,
+                       mouthOpen:1.0, mouthForm:1.0, eyeX:0, eyeY:0 },
+        surprised:   { headX:0, headY:-0.3, headZ:0,
+                       eyeOpen:1.3, eyeSmile:0, browForm:0.9, browAngle:-0.5,
+                       mouthOpen:0.8, mouthForm:-0.3, eyeX:0, eyeY:-0.15 },
+        annoyed:     { headX:-0.25, headY:-0.1, headZ:-0.15,
+                       eyeOpen:0.4, eyeSmile:0, browForm:-0.6, browAngle:0.8,
+                       mouthOpen:0, mouthForm:-0.8, eyeX:-0.3, eyeY:0.15 },
+        sad:         { headX:0, headY:-0.3, headZ:0.15,
+                       eyeOpen:0.4, eyeSmile:0, browForm:-0.3, browAngle:0.7,
+                       mouthOpen:0, mouthForm:-0.7, eyeX:0, eyeY:-0.3 },
+        thinking:    { headX:0.35, headY:0.2, headZ:0.2,
+                       eyeOpen:0.6, eyeSmile:0, browForm:-0.2, browAngle:-0.5,
+                       mouthOpen:0, mouthForm:0, eyeX:0.5, eyeY:0.3 },
+        smug:        { headX:0.2, headY:0.15, headZ:-0.2,
+                       eyeOpen:0.45, eyeSmile:0.6, browForm:0.4, browAngle:-0.3,
+                       mouthOpen:0, mouthForm:0.8, eyeX:0.25, eyeY:0 },
+        excited:     { headX:0, headY:0.35, headZ:0,
+                       eyeOpen:1.2, eyeSmile:0.7, browForm:0.6, browAngle:0,
+                       mouthOpen:0.5, mouthForm:1.0, eyeX:0, eyeY:0.25 },
+        embarrassed: { headX:-0.3, headY:-0.2, headZ:0.2,
+                       eyeOpen:0.5, eyeSmile:0.3, browForm:0.2, browAngle:0.4,
+                       mouthOpen:0.05, mouthForm:0.4, eyeX:-0.4, eyeY:-0.15 },
+        bored:       { headX:0.15, headY:-0.4, headZ:0.15,
+                       eyeOpen:0.2, eyeSmile:0, browForm:-0.2, browAngle:0,
+                       mouthOpen:0, mouthForm:-0.3, eyeX:0.15, eyeY:-0.15 },
+        disgust:     { headX:-0.15, headY:0.2, headZ:-0.15,
+                       eyeOpen:0.3, eyeSmile:0, browForm:-0.4, browAngle:0.7,
+                       mouthOpen:0.15, mouthForm:-1.0, eyeX:-0.25, eyeY:0.1 },
+        shy:         { headX:-0.3, headY:-0.25, headZ:0.2,
+                       eyeOpen:0.5, eyeSmile:0.2, browForm:0.3, browAngle:0.3,
+                       mouthOpen:0, mouthForm:0.2, eyeX:-0.4, eyeY:-0.25 },
+        angry:       { headX:-0.1, headY:0.15, headZ:-0.1,
+                       eyeOpen:0.5, eyeSmile:0, browForm:-0.8, browAngle:0.9,
+                       mouthOpen:0.2, mouthForm:-0.9, eyeX:-0.15, eyeY:0.1 },
+        wink:        { headX:0.15, headY:0.15, headZ:-0.15,
+                       eyeOpen:0.8, eyeOpenL:0.05, eyeSmile:0.7, browForm:0.2, browAngle:0,
+                       mouthOpen:0.15, mouthForm:0.8, eyeX:0.15, eyeY:0 },
+        greet:       { headX:0, headY:0.3, headZ:0.08,
+                       eyeOpen:0.9, eyeSmile:0.85, browForm:0.3, browAngle:0,
+                       mouthOpen:0.3, mouthForm:1.0, eyeX:0, eyeY:0 },
+        laugh:       { headX:0, headY:0.25, headZ:0.15,
+                       eyeOpen:0.05, eyeSmile:1.0, browForm:0.4, browAngle:0.1,
+                       mouthOpen:0.9, mouthForm:1.0, eyeX:0, eyeY:0 },
+    },
+
+    init(model) {
+        this.model = model;
+        this.targets = {...this.EMOTIONS.neutral};
+        this.params  = {...this.EMOTIONS.neutral};
+        console.log('[AnimEngine] Initialized — 3 layer system active');
+    },
+
+    // Main loop — uses PIXI ticker at LOW priority so it runs
+    // AFTER the Live2D SDK's internal model update.
+    // This ensures our parameter values are the final ones applied.
+    startIdleLoop() {
+        let lastTime = performance.now();
+        
+        app.ticker.add(() => {
+            const now = performance.now();
+            const dt = Math.min((now - lastTime) / 1000, 0.1);
+            lastTime = now;
+            this.t += dt;
+
+            this._updateBlink(now);
+            this._updateEyeWander(now, dt);
+            this._lerp(dt);
+            this._applyToModel(dt);
+        }, null, PIXI.UPDATE_PRIORITY.LOW);
+        
+        console.log('[AnimEngine] Started on PIXI ticker (LOW priority)');
+    },
+
+    // Layer 2: Smooth interpolation toward target
+    _lerp(dt) {
+        // Check if reaction expired
+        if (this.reactionActive && Date.now() > this.reactionEndTime) {
+            this.reactionActive = false;
+            this.targets = {...(this.EMOTIONS[this.currentEmotion]
+                || this.EMOTIONS.neutral)};
+        }
+
+        const target = this.reactionActive
+            ? this.reactionTargets
+            : this.targets;
+
+        // Reactions transition quickly but smoothly, emotions lerp gently
+        const speed = this.reactionActive ? 12.0 : 5.0;
+
+        for (const key in this.params) {
+            if (key in target) {
+                const diff = target[key] - this.params[key];
+                this.params[key] += diff * Math.min(speed * dt, 1);
+            }
+        }
+    },
+
+    // Natural blinking
+    _updateBlink(now) {
+        if (!this.isBlinking && now >= this.nextBlink) {
+            this.isBlinking = true;
+            this.blinkStart = now;
+            this.nextBlink = now + 2500 + Math.random() * 3500;
+        }
+        if (this.isBlinking) {
+            const e = now - this.blinkStart;
+            const half = 60;
+            if (e < half)           this.blinkValue = 1 - e / half;
+            else if (e < half * 2)  this.blinkValue = (e - half) / half;
+            else { this.blinkValue = 1; this.isBlinking = false; }
+        }
+    },
+
+    // Random eye movement with smooth interpolation
+    _updateEyeWander(now, dt) {
+        if (now >= this.nextEyeMove) {
+            if (this.currentEmotion === 'thinking') {
+                this.eyeTargetX = (0.15 + Math.random() * 0.25) * (Math.random() < 0.5 ? -1 : 1);
+                this.eyeTargetY = 0.1 + Math.random() * 0.2;
+            } else {
+                this.eyeTargetX = (Math.random() - 0.5) * 0.5;
+                this.eyeTargetY = (Math.random() - 0.5) * 0.3;
+            }
+            this.nextEyeMove = now + 1500 + Math.random() * 3000;
+        }
+        // Smooth interpolation
+        const lerp = Math.min(1.0, 6.0 * dt);
+        this.eyeCurrentX += (this.eyeTargetX - this.eyeCurrentX) * lerp;
+        this.eyeCurrentY += (this.eyeTargetY - this.eyeCurrentY) * lerp;
+    },
+
+    // Apply ONLY lip-sync and minimal overrides.
+    // The model's idle motion and expressions handle face/body animation.
+    // We ONLY touch: ParamMouthOpenY (lip sync from audio volume).
+    _applyToModel(dt) {
+        if (!this.model) return;
+
+        const core = this.model.internalModel.coreModel;
+        const set = (id, val) => {
+            try { core.setParameterValueById(id, val); } catch(e) {}
+        };
+
+        // ── Audio-volume Lip-Sync ──
+        const now = Date.now();
+        const volumeAge = now - this.lastVolumeTime;
+        if (volumeAge > this.volumeTimeout) this.mouthVolume = 0;
+        
+        const attackSpeed = 0.45;
+        const releaseSpeed = 0.35;
+        const lerpFactor = this.mouthVolume > this.mouthVolumeSmooth ? attackSpeed : releaseSpeed;
+        this.mouthVolumeSmooth += (this.mouthVolume - this.mouthVolumeSmooth) * lerpFactor;
+        if (this.mouthVolumeSmooth < 0.01) this.mouthVolumeSmooth = 0;
+
+        // FORCE mouth open when talking — uses priority 3 to beat
+        // expression manager (priority 2) so lip-sync continues
+        // even while native .exp3.json expressions are active.
+        if (this.isTalking && this.mouthVolumeSmooth > 0) {
+            const vol = Math.min(this.mouthVolumeSmooth * 4.0, 1.0);
+            try {
+                // Use overwriteParameterValueById for FORCE priority
+                core.setParameterValueById('ParamMouthOpenY', vol * 0.85, 1.0);
+            } catch(e) {
+                set('ParamMouthOpenY', vol * 0.85);
+            }
+        }
+    },
+
+    // ── Public API (called from WebSocket commands) ──
+
+    setEmotion(name, duration) {
+        const preset = this.EMOTIONS[name] || this.EMOTIONS.neutral;
+        this.currentEmotion = name;
+        this.targets = {...preset};
+        if (duration > 0) {
+            setTimeout(() => {
+                if (this.currentEmotion === name) {
+                    this.currentEmotion = 'neutral';
+                    this.targets = {...this.EMOTIONS.neutral};
+                }
+            }, duration * 1000);
+        }
+    },
+
+    triggerReaction(name, duration) {
+        const preset = this.EMOTIONS[name] || this.EMOTIONS.neutral;
+        // Set reaction targets — the _lerp() function will interpolate
+        // quickly (12x speed) but smoothly, avoiding the jarring instant snap
+        this.reactionTargets = {...preset};
+        this.reactionActive = true;
+        this.reactionEndTime = Date.now() + (duration || 1.5) * 1000;
+        console.log('[AnimEngine] ⚡ Reaction:', name, 'for', duration, 's');
+    },
+
+    setMouthVolume(rms) {
+        this.mouthVolume = rms;
+        this.lastVolumeTime = Date.now();
+    },
+
+    setTalking(val) {
+        this.isTalking = val;
+        if (!val) { this.mouthVolume = 0; this.mouthVolumeSmooth = 0; }
+        // Restore base mouth setting from current emotion
+        this.targets.mouthOpen = this.EMOTIONS[this.currentEmotion]?.mouthOpen || 0;
+    },
+
+    setMood(mood) { this.currentMood = mood; },
+
+    doSpin(times) {
+        if (!this.model) return;
+        const duration = 600 * (times || 1);
+        const start = performance.now();
+        const n = times || 1;
+        const spin = (now) => {
+            const progress = (now - start) / duration;
+            if (progress < 1) {
+                this.model.rotation = progress * Math.PI * 2 * n;
+                requestAnimationFrame(spin);
+            } else {
+                this.model.rotation = 0;
+            }
+        };
+        requestAnimationFrame(spin);
+    },
+
+    doJump() {
+        if (!this.model) return;
+        const baseY = this.model.y;
+        const H = app.renderer.height;
+        const start = performance.now();
+        const dur = 600;
+        const jump = (now) => {
+            const p = (now - start) / dur;
+            if (p < 1) {
+                this.model.y = baseY - Math.sin(p * Math.PI) * H * 0.08;
+                requestAnimationFrame(jump);
+            } else {
+                this.model.y = baseY;
+            }
+        };
+        requestAnimationFrame(jump);
+    },
+};
+
+// ============================================================
+// WEBSOCKET — Receives commands from Python
+// ============================================================
+
+let ws = null;
+let wsReady = false;
+
+function connectWS() {
+    ws = new WebSocket('ws://localhost:' + WS_PORT);
+
+    ws.onopen = () => {
+        wsReady = true;
+        setStatus('✓ Connected');
+        console.log('[WS] Connected to Python bridge');
+        // Only send model_info if model is already loaded
+        if (currentModel && modelLoaded) {
+            sendBack({
+                type: 'model_info',
+                motions: getAvailableMotions(currentModel),
+                expressions: getAvailableExpressions(currentModel),
+            });
+        }
+    };
+
+    ws.onclose = () => {
+        wsReady = false;
+        setStatus('✗ Disconnected — retrying...');
+        setTimeout(connectWS, RECONNECT_INTERVAL);
+    };
+
+    ws.onerror = () => { ws.close(); };
+
+    ws.onmessage = (event) => {
+        try { handleCommand(JSON.parse(event.data)); }
+        catch(e) { console.error('[WS] Bad message:', e); }
+    };
+}
+
+function sendBack(data) {
+    if (wsReady && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+    }
+}
+
+// ============================================================
+// COMMAND HANDLER
+// ============================================================
+
+function handleCommand(cmd) {
+    switch(cmd.action) {
+        case 'load_model':
+            loadModel(cmd.path);
+            break;
+        case 'set_emotion':
+        case 'react':
+            // Use the model's NATIVE expression system (.exp3.json files)
+            // These have rich visual effects (question marks, star eyes, etc.)
+            // Using INDICES (from model3.json FileReferences.Expressions order):
+            //  0=星星眼  1=爱心眼  2=惊讶  3=生气  4=白眼  5=脸红
+            //  6=脸黑  7=流泪  8=舌头  9=疑惑  10=猫耳  11=王冠
+            //  12=翅膀  13=金钱眼  14=手柄  18=←歪嘴  19=歪嘴→
+            if (currentModel && cmd.emotion) {
+                const EXPRESSION_INDEX = {
+                    'surprised':   2,   // 惊讶 — wide eyes, shock marks
+                    'sad':         7,   // 流泪 — tears
+                    'angry':       3,   // 生气 — angry face
+                    'thinking':    9,   // 疑惑 — question marks
+                    'shy':         5,   // 脸红 — blush
+                    'disgust':     6,   // 脸黑 — dark face
+                    'laughing':    1,   // 爱心眼 — heart eyes
+                    'laugh':       1,   // 爱心眼 — heart eyes
+                    'happy':       1,   // 爱心眼 — heart eyes
+                    'excited':     0,   // 星星眼 — star eyes
+                    'smug':        8,   // 舌头 — tongue out
+                    'embarrassed': 5,   // 脸红 — blush
+                    'annoyed':     4,   // 白眼 — eye roll
+                    'bored':       4,   // 白眼 — eye roll
+                    'wink':        18,  // ←歪嘴 — crooked smile
+                    'greet':       0,   // 星星眼 — star eyes
+                };
+                const expIndex = EXPRESSION_INDEX[cmd.emotion];
+                if (expIndex !== undefined) {
+                    currentModel.expression(expIndex);
+                    console.log('[Viewer] ⚡ Expression:', cmd.emotion, '→ index', expIndex);
+                    // Auto-reset after duration
+                    const dur = (cmd.duration || 2) * 1000;
+                    if (window._expressionResetTimer) clearTimeout(window._expressionResetTimer);
+                    window._expressionResetTimer = setTimeout(() => {
+                        // Reset expression by clearing the expression manager
+                        try {
+                            const em = currentModel.internalModel.motionManager.expressionManager;
+                            if (em) {
+                                // Clear the current expression so parameters return to defaults
+                                if (em._currentExpression) {
+                                    em._currentExpression = undefined;
+                                }
+                                // Also clear any stored expression reference
+                                if (typeof em.resetExpression === 'function') {
+                                    em.resetExpression();
+                                }
+                            }
+                        } catch(e) {
+                            console.warn('[Viewer] Expression reset error:', e);
+                        }
+                        console.log('[Viewer] ✓ Expression reset to neutral');
+                    }, dur);
+                } else if (cmd.emotion === 'neutral') {
+                    console.log('[Viewer] Neutral — no expression change');
+                } else {
+                    console.log('[Viewer] No expression mapped for:', cmd.emotion);
+                }
+            }
+            break;
+        case 'talking':
+        case 'talking_start':
+            AnimationEngine.setTalking(cmd.value !== false);
+            break;
+        case 'talking_stop':
+            AnimationEngine.setTalking(false);
+            break;
+        case 'set_mood':
+            AnimationEngine.setMood(cmd.mood || 'neutral');
+            break;
+        case 'spin':
+            AnimationEngine.doSpin(cmd.times || 1);
+            break;
+        case 'jump':
+            AnimationEngine.doJump();
+            break;
+        case 'motion':
+            if (currentModel && cmd.name) {
+                try {
+                    let group = cmd.group || cmd.name;
+                    let index = cmd.index || 0;
+                    
+                    // Buscar en todos los grupos si el archivo coincide con cmd.name
+                    // (Útil para modelos como IceGirl que ponen todos los motions en el grupo "")
+                    const motions = currentModel.internalModel.settings.motions;
+                    if (motions) {
+                        let found = false;
+                        for (const g in motions) {
+                            const mList = motions[g];
+                            for (let i = 0; i < mList.length; i++) {
+                                if (mList[i].file && (mList[i].file.includes(cmd.name) || mList[i].file.includes(cmd.name + ".motion3.json"))) {
+                                    group = g;
+                                    index = i;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (found) break;
+                        }
+                    }
+                    
+                    currentModel.motion(group, index);
+                    console.log('[Viewer] Playing motion:', group, 'index:', index, 'for name:', cmd.name);
+                } catch(e) {
+                    console.warn('[Viewer] Motion failed:', cmd.name, e);
+                }
+            }
+            break;
+        case 'expression':
+            if (currentModel && cmd.name) {
+                currentModel.expression(cmd.name);
+            }
+            break;
+        case 'mouth_volume':
+            AnimationEngine.setMouthVolume(cmd.value || 0);
+            break;
+        case 'set_param':
+            if (currentModel && cmd.id !== undefined) {
+                try {
+                    currentModel.internalModel.coreModel
+                        .setParameterValueById(cmd.id, cmd.value || 0);
+                } catch(e) {}
+            }
+            break;
+        case 'set_scale':
+            if (currentModel) currentModel.scale.set(cmd.scale || 1);
+            break;
+        case 'set_position':
+            if (currentModel) {
+                currentModel.x = app.renderer.width * (cmd.x || 0.5);
+                currentModel.y = app.renderer.height * (cmd.y || 0.55);
+            }
+            break;
+        case 'set_background':
+            // Legacy support — ignored for transparent OBS
+            break;
+        case 'get_info':
+            if (currentModel) {
+                sendBack({
+                    type: 'model_info',
+                    motions: getAvailableMotions(currentModel),
+                    expressions: getAvailableExpressions(currentModel),
+                    emotions: Object.keys(AnimationEngine.EMOTIONS),
+                });
+            }
+            break;
+    }
+}
+
+// ============================================================
+// AUTO-LOAD MODEL
+// ============================================================
+
+async function autoLoadModel() {
+    try {
+        const resp = await fetch('/api/model_path');
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data.path) {
+                // Encode spaces for strictly compliant browsers
+                const safePath = data.path.split('/').map(encodeURIComponent).join('/');
+                await loadModel(safePath); 
+                return; 
+            }
+        }
+    } catch(e) {}
+
+    try {
+        const resp = await fetch('/models/');
+        const text = await resp.text();
+        const match = text.match(/href="([^"]+\.model3\.json)"/);
+        if (match) { await loadModel('models/' + match[1]); return; }
+    } catch(e) {}
+
+    document.getElementById('no-model').style.display = 'block';
+    setStatus('⚠ No model found');
+}
+
+function setStatus(text) {
+    document.getElementById('status').textContent = text;
+}
+
+// Start
+connectWS();
+autoLoadModel();
+
+console.log(`
+[Aiko Live2D Viewer]
+OBS Setup:
+  Source: Browser (Navegador)
+  URL: http://localhost:8180/index.html  
+  Width: 1920, Height: 1080
+  ✅ Allow transparency (Permitir transparencia)
+  CSS: body { background: transparent !important; }
+`);
+</script>
+</body>
+</html>

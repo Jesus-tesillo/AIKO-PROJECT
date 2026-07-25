@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Aiko Captions</title>
+    <!-- Usa una fuente parecida a la de Numi, suave y redonda -->
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: transparent; /* Transparente para OBS */
+            overflow: hidden;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            height: 100vh;
+            font-family: 'Fredoka', sans-serif;
+        }
+
+        #caption-container {
+            width: 85%;
+            text-align: center;
+            margin-bottom: 40px; /* Separación del borde inferior */
+            opacity: 0;
+            transition: opacity 0.2s ease-in-out;
+            transform: translateY(0); /* Removemos el translate para que quede fijo */
+        }
+
+        #caption-container.visible {
+            opacity: 1;
+        }
+
+        /* Estilo de la letra de Vtuber (blanco con borde grueso rojo/oscuro y sombra) */
+        .caption-text {
+            display: inline-block;
+            font-size: 64px; /* Más grande porque son fragmentos cortos */
+            font-weight: 600;
+            color: #ffffff;
+            line-height: 1.2;
+            letter-spacing: 1px;
+            
+            /* Borde perimetral simétrico para el efecto anime/vtuber */
+            text-shadow: 
+                -4px -4px 0 #932929,
+                 4px -4px 0 #932929,
+                -4px  4px 0 #932929,
+                 4px  4px 0 #932929,
+                -4px  0   0 #932929,
+                 4px  0   0 #932929,
+                 0   -4px 0 #932929,
+                 0    4px 0 #932929,
+                 
+                 /* Sombra de profundidad */
+                 6px 6px 4px rgba(0,0,0,0.4);
+                 
+            /* Animación 'Pop' estilo YouTube Shorts */
+            transform: scale(0.85);
+            transition: transform 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .caption-text.pop {
+            transform: scale(1.0);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="caption-container">
+        <span class="caption-text" id="caption-text"></span>
+    </div>
+
+    <script>
+        const WS_PORT = 8765;
+        let ws;
+        const container = document.getElementById('caption-container');
+        const textEl = document.getElementById('caption-text');
+        
+        let hideTimeout;
+
+        function connectWS() {
+            ws = new WebSocket('ws://localhost:' + WS_PORT);
+
+            ws.onopen = () => {
+                console.log('Captions connected to Aiko!');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.action === 'caption' && data.text) {
+                        showCaption(data.text, data.duration || 0);
+                    }
+                } catch(e) {}
+            };
+
+            ws.onclose = () => {
+                setTimeout(connectWS, 2000);
+            };
+        }
+
+        function showCaption(text, audioDuration) {
+            // Eliminar tags como (risa) de los subtitulos para que sea limpio
+            const cleanText = text.replace(/\([^)]+\)|\*[^*]+\*/g, '').trim();
+            if (!cleanText) return;
+
+            textEl.innerText = cleanText;
+            
+            // Mostrar contenedor si estaba oculto
+            if (!container.classList.contains('visible')) {
+                container.classList.add('visible');
+            }
+
+            // Reiniciar la animación de 'pop' para el texto
+            textEl.classList.remove('pop');
+            void textEl.offsetWidth; // Forzar reflow
+            textEl.classList.add('pop');
+
+            // Duración: usar la real del audio si viene, sino calcular por longitud
+            let duration;
+            if (audioDuration && audioDuration > 0) {
+                // Duración real del fragmento + margen para encadenar
+                duration = (audioDuration * 1000) + 300; 
+            } else {
+                // Fallback
+                duration = Math.max(1500, cleanText.length * 80);
+            }
+            console.log(`[Captions] Showing "${cleanText.substring(0,20)}..." for ${duration}ms`);
+
+            clearTimeout(hideTimeout);
+            hideTimeout = setTimeout(() => {
+                container.classList.remove('visible');
+                textEl.classList.remove('pop');
+            }, duration);
+        }
+
+        connectWS();
+    </script>
+</body>
+</html>

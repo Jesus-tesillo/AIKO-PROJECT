@@ -1,0 +1,18 @@
+{
+  "name": "Aiko",
+  "streams_completed": 30,
+  "current_mood": "neutral",
+  "mood_reason": null,
+  "energy_level": 0.7,
+  "current_obsessions": [],
+  "recent_achievements": [],
+  "recent_failures": [],
+  "stats": {
+    "total_messages_read": 0,
+    "gacha_total_pulls": 0,
+    "gacha_ssrs": 0,
+    "tribunal_cases": 0,
+    "times_trolled": 0,
+    "times_praised": 0
+  }
+}

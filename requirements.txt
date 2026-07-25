@@ -1,0 +1,28 @@
+# MyAI VTuber — Python Dependencies
+
+# Core Stack & LLM
+groq>=1.1.0
+PyYAML>=6.0.0
+requests>=2.31.0
+numpy>=2.0.0
+
+# Dashboard & Web Services
+flask>=3.0.0
+websockets>=16.0
+
+# Audio & Voice Synthesis
+sounddevice>=0.5.0
+soundfile>=0.13.0
+edge-tts>=7.0.0
+piper-tts>=1.4.0
+
+# Chat Platforms & Integrations
+twitchAPI>=4.5.0
+TikTokLive>=6.6.0
+
+# Chess Module (Interactive Games)
+chess>=1.11.0
+berserk>=0.14.0
+
+# Optional Audio / Speech-to-Text
+faster-whisper>=1.2.0

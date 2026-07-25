@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiko Chess — Stream Overlay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;900&display=swap" rel="stylesheet">
+
+<!-- chessboard.js + chess.js desde CDN -->
+<link rel="stylesheet"
+  href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+<style>
+/* ── Reset y base ─────────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:transparent;font-family:'Outfit',sans-serif;overflow:hidden}
+
+/* ── Layout principal ─────────────────────────────────────────── */
+.chess-overlay{
+  position:fixed;
+  bottom:30px;
+  right:30px;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:12px;
+  pointer-events:none;
+}
+
+/* ── Tablero ──────────────────────────────────────────────────── */
+.board-wrap{
+  position:relative;
+  border-radius:16px;
+  overflow:hidden;
+  box-shadow:0 0 0 3px rgba(168,85,247,0.6),
+             0 0 30px rgba(168,85,247,0.3),
+             0 20px 60px rgba(0,0,0,0.7);
+  transition:transform 0.3s ease;
+}
+.board-wrap:hover{transform:scale(1.01)}
+
+/* Borde degradado animado */
+.board-wrap::before{
+  content:'';
+  position:absolute;
+  inset:-2px;
+  border-radius:18px;
+  background:linear-gradient(135deg,#e879a8,#a78bfa,#38bdf8,#e879a8);
+  background-size:300% 300%;
+  animation:borderShift 4s ease infinite;
+  z-index:-1;
+}
+@keyframes borderShift{
+  0%{background-position:0% 50%}
+  50%{background-position:100% 50%}
+  100%{background-position:0% 50%}
+}
+
+#board{width:340px !important;height:340px !important}
+
+/* Piezas negras / blancas del chessboard.js */
+.board-b72b1{border-radius:14px !important}
+
+/* ── Header del tablero (jugadores) ──────────────────────────── */
+.players-bar{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:8px 14px;
+  background:rgba(13,11,26,0.92);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid rgba(168,85,247,0.3);
+}
+.player-tag{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:14px;
+  font-weight:700;
+}
+.player-tag.aiko{color:#e879a8}
+.player-tag.opponent{color:#38bdf8}
+.avatar{
+  width:28px;height:28px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;
+  background:rgba(255,255,255,0.08);
+}
+.vs-badge{
+  padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;
+  background:rgba(168,85,247,0.2);color:#a78bfa;
+  border:1px solid rgba(168,85,247,0.4);
+}
+.turn-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+}
+.turn-dot.active{background:#4ade80;box-shadow:0 0 8px #4ade80;animation:pulse 1s infinite}
+.turn-dot.inactive{background:#374151}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
+/* ── Footer del tablero (movimiento + estado) ─────────────────── */
+.board-footer{
+  background:rgba(13,11,26,0.92);
+  backdrop-filter:blur(12px);
+  padding:8px 14px;
+  border-top:1px solid rgba(168,85,247,0.2);
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  font-size:12px;
+}
+.move-count{color:#5a5280}
+.last-move{
+  font-family:monospace;font-size:13px;font-weight:700;
+  color:#a78bfa;
+  background:rgba(168,85,247,0.1);
+  padding:2px 8px;border-radius:6px;
+}
+.game-status{
+  font-size:11px;font-weight:600;
+  padding:3px 10px;border-radius:20px;
+}
+.game-status.playing{
+  background:rgba(74,222,128,0.15);color:#4ade80;
+  border:1px solid rgba(74,222,128,0.3);
+}
+.game-status.idle{
+  background:rgba(91,75,128,0.2);color:#6b5b95;
+  border:1px solid rgba(91,75,128,0.3);
+}
+.game-status.check{
+  background:rgba(251,191,36,0.15);color:#fbbf24;
+  border:1px solid rgba(251,191,36,0.4);
+  animation:pulseCheck 0.6s ease infinite alternate;
+}
+@keyframes pulseCheck{from{opacity:1}to{opacity:0.5}}
+
+/* ── Burbuja de comentario de Aiko ───────────────────────────── */
+.comment-bubble{
+  max-width:380px;
+  background:rgba(13,11,26,0.88);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(232,121,168,0.4);
+  border-radius:16px 4px 16px 16px;
+  padding:12px 16px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.5),
+             0 0 0 1px rgba(232,121,168,0.1);
+  animation:fadeIn 0.4s ease;
+  position:relative;
+  display:none;
+}
+.comment-bubble.visible{display:block}
+.comment-bubble::after{
+  content:'';
+  position:absolute;
+  top:0;right:-8px;
+  width:0;height:0;
+  border-left:8px solid rgba(232,121,168,0.4);
+  border-top:8px solid transparent;
+}
+.comment-aiko-label{
+  font-size:10px;font-weight:700;
+  color:#e879a8;
+  text-transform:uppercase;
+  letter-spacing:1.5px;
+  margin-bottom:6px;
+  display:flex;align-items:center;gap:6px;
+}
+.comment-text{
+  color:#e2dff0;font-size:14px;line-height:1.5;
+}
+
+/* ── Mini Leaderboard ─────────────────────────────────────────── */
+.leaderboard{
+  background:rgba(13,11,26,0.88);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(168,85,247,0.25);
+  border-radius:14px;
+  padding:12px 16px;
+  min-width:220px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.5);
+  display:none;
+}
+.leaderboard.visible{display:block}
+.lb-title{
+  font-size:11px;font-weight:700;color:#a78bfa;
+  text-transform:uppercase;letter-spacing:1.5px;
+  margin-bottom:10px;
+  display:flex;align-items:center;gap:6px;
+}
+.lb-row{
+  display:flex;align-items:center;gap:8px;
+  padding:5px 0;
+  border-bottom:1px solid rgba(255,255,255,0.04);
+  font-size:13px;
+}
+.lb-row:last-child{border-bottom:none}
+.lb-rank{
+  width:22px;height:22px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;flex-shrink:0;
+}
+.lb-rank.r1{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:#000}
+.lb-rank.r2{background:linear-gradient(135deg,#6b7280,#9ca3af);color:#000}
+.lb-rank.r3{background:linear-gradient(135deg,#92400e,#b45309);color:#fff}
+.lb-rank.rn{background:rgba(255,255,255,0.08);color:#6b7280}
+.lb-name{flex:1;color:#e2dff0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lb-pts{color:#a78bfa;font-weight:700;font-size:12px}
+
+/* ── Evento flash (jaque, mate, etc.) ────────────────────────── */
+.event-flash{
+  position:fixed;
+  top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  font-size:48px;font-weight:900;
+  text-align:center;
+  pointer-events:none;
+  opacity:0;
+  transition:opacity 0.3s ease;
+  text-shadow:0 0 40px currentColor;
+  z-index:100;
+}
+.event-flash.show{opacity:1}
+.event-flash.check{color:#fbbf24}
+.event-flash.win{color:#4ade80}
+.event-flash.lose{color:#f87171}
+
+/* ── Animaciones ──────────────────────────────────────────────── */
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
+.slide-in{animation:slideIn 0.3s ease}
+
+/* ── Estado inactivo (no hay partida) ────────────────────────── */
+.idle-hint{
+  background:rgba(13,11,26,0.72);
+  backdrop-filter:blur(10px);
+  border:1px solid rgba(168,85,247,0.2);
+  border-radius:12px;
+  padding:10px 18px;
+  font-size:13px;color:#5a5280;
+  display:none;
+}
+.idle-hint.visible{display:block}
+.idle-hint span{color:#a78bfa;font-weight:700}
+</style>
+</head>
+<body>
+
+<div class="chess-overlay" id="overlay">
+
+  <!-- Burbuja de comentario de Aiko -->
+  <div class="comment-bubble" id="commentBubble">
+    <div class="comment-aiko-label">
+      <span style="font-size:14px">♟️</span> Aiko dice
+    </div>
+    <div class="comment-text" id="commentText"></div>
+  </div>
+
+  <!-- Mini leaderboard -->
+  <div class="leaderboard" id="leaderboard">
+    <div class="lb-title">🏆 Top Jugadores</div>
+    <div id="lbRows"></div>
+  </div>
+
+  <!-- Tablero de ajedrez -->
+  <div class="board-wrap" id="boardWrap" style="display:none">
+    <!-- Header: jugadores -->
+    <div class="players-bar">
+      <div class="player-tag opponent">
+        <div class="avatar">👤</div>
+        <span id="opponentName">?</span>
+        <div class="turn-dot inactive" id="dotOpponent"></div>
+      </div>
+      <div class="vs-badge">VS</div>
+      <div class="player-tag aiko">
+        <div class="turn-dot inactive" id="dotAiko"></div>
+        <span>Aiko</span>
+        <div class="avatar">🤖</div>
+      </div>
+    </div>
+
+    <!-- Tablero -->
+    <div id="board"></div>
+
+    <!-- Footer: estado -->
+    <div class="board-footer">
+      <span class="move-count" id="moveCount">Mov. 0</span>
+      <span class="last-move" id="lastMove">—</span>
+      <span class="game-status idle" id="gameStatus">En espera</span>
+    </div>
+  </div>
+
+  <!-- Hint cuando está inactivo -->
+  <div class="idle-hint" id="idleHint">
+    Escribe <span>!chess @TuNombre</span> para desafiar a Aiko ♟️
+  </div>
+
+</div>
+
+<!-- Flash de eventos -->
+<div class="event-flash" id="eventFlash"></div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────
+const API   = 'http://localhost:5000';
+const POLL  = 1500;   // ms entre polls
+const LB_REFRESH = 15000;  // cada cuánto refresca el leaderboard
+
+// ── Estado local ────────────────────────────────────────────────
+let board      = null;
+let lastFEN    = '';
+let lastStatus = 'idle';
+let lastComment= '';
+let commentTimer = null;
+let showLB     = false;
+let lbTimer    = null;
+
+// ── Inicializar tablero ─────────────────────────────────────────
+function initBoard() {
+  const cfg = {
+    position:    'start',
+    showNotation: true,
+    pieceTheme:  'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/img/chesspieces/wikipedia/{piece}.png',
+    draggable:   false,
+  };
+  board = Chessboard('board', cfg);
+}
+
+// ── Poll del estado del juego ───────────────────────────────────
+async function pollState() {
+  try {
+    const r = await fetch(API + '/api/chess/state');
+    if (!r.ok) return;
+    const d = await r.json();
+    updateOverlay(d);
+  } catch(e) {
+    // Sin conexión con el backend — silencioso
+  }
+}
+
+function updateOverlay(d) {
+  const status   = d.status || 'idle';
+  const isActive = status === 'playing' || status === 'starting';
+  const opponent = d.opponent || '';
+  const fen      = d.fen || 'start';
+  const turn     = d.turn || 'aiko';   // 'aiko' | 'opponent'
+  const moves    = d.move_count || 0;
+  const event    = d.last_event || '';
+
+  // ── Visibilidad ────────────────────────────────────────────────
+  document.getElementById('boardWrap').style.display = isActive ? 'block' : 'none';
+  document.getElementById('idleHint').classList.toggle('visible', !isActive);
+
+  if (!isActive) {
+    // Mostrar leaderboard cuando no hay partida activa
+    if (!showLB) loadLeaderboard();
+    return;
+  }
+
+  document.getElementById('leaderboard').classList.remove('visible');
+
+  // ── Tablero ────────────────────────────────────────────────────
+  if (fen && fen !== lastFEN && fen !== '') {
+    try {
+      board.position(fen === 'start' ? 'start' : fen);
+      lastFEN = fen;
+
+      // Highlight de la última jugada se haría aquí con chess.js si quisiéramos
+      // Por simplicidad, solo actualizamos la posición
+    } catch(e) {}
+  }
+
+  // ── Jugadores y turno ──────────────────────────────────────────
+  document.getElementById('opponentName').textContent = opponent || '?';
+  const isAikoTurn = turn === 'aiko';
+  document.getElementById('dotAiko').className     = 'turn-dot ' + (isAikoTurn  ? 'active' : 'inactive');
+  document.getElementById('dotOpponent').className = 'turn-dot ' + (!isAikoTurn ? 'active' : 'inactive');
+
+  // ── Contador de movimientos ────────────────────────────────────
+  document.getElementById('moveCount').textContent = 'Mov. ' + moves;
+
+  // ── Último movimiento (extraído del FEN o last_event) ─────────
+  // El event contiene info textual del último turno
+  const moveEl = document.getElementById('lastMove');
+  if (event && event !== 'inicio' && event !== lastStatus) {
+    moveEl.textContent = event.substring(0, 20);
+  }
+
+  // ── Estado del juego ───────────────────────────────────────────
+  const statusEl = document.getElementById('gameStatus');
+  let statusTxt = 'Jugando';
+  statusEl.className = 'game-status playing';
+
+  if (event && event.includes('jaque')) {
+    statusTxt = '¡JAQUE!';
+    statusEl.className = 'game-status check';
+    if (lastStatus !== status + event) flashEvent('¡JAQUE!', 'check');
+  } else if (status === 'starting') {
+    statusTxt = 'Iniciando…';
+    statusEl.className = 'game-status idle';
+  }
+  statusEl.textContent = statusTxt;
+  lastStatus = status + event;
+}
+
+// ── Leaderboard ─────────────────────────────────────────────────
+async function loadLeaderboard() {
+  try {
+    const r = await fetch(API + '/api/chess/leaderboard?n=5');
+    if (!r.ok) return;
+    const lb = await r.json();
+
+    if (lb.length === 0) {
+      document.getElementById('leaderboard').classList.remove('visible');
+      return;
+    }
+
+    const rankClasses = ['r1','r2','r3','rn','rn'];
+    let html = '';
+    lb.forEach((p,i) => {
+      const cls = rankClasses[i] || 'rn';
+      html += `<div class="lb-row">
+        <div class="lb-rank ${cls}">${p.rank}</div>
+        <div class="lb-name">${p.username}</div>
+        <div class="lb-pts">${p.points}pts</div>
+      </div>`;
+    });
+
+    document.getElementById('lbRows').innerHTML = html;
+    document.getElementById('leaderboard').classList.add('visible');
+    showLB = true;
+
+    // Ocultar el leaderboard después de 10s si hay partida
+    clearTimeout(lbTimer);
+    lbTimer = setTimeout(() => {
+      showLB = false;
+    }, 10000);
+
+  } catch(e) {}
+}
+
+// ── Comment bubble ───────────────────────────────────────────────
+// Escucha un endpoint de comentarios (pusheado desde chess_bridge)
+// Por ahora hace poll del last_event y si cambia lo muestra
+let lastShownEvent = '';
+function maybeShowComment(event, opponent) {
+  if (!event || event === lastShownEvent || event === 'turno normal' || event === 'inicio') return;
+  lastShownEvent = event;
+
+  const bubble = document.getElementById('commentBubble');
+  const txt    = document.getElementById('commentText');
+  txt.textContent = event;
+  bubble.classList.add('visible');
+
+  clearTimeout(commentTimer);
+  commentTimer = setTimeout(() => {
+    bubble.classList.remove('visible');
+  }, 5500);
+}
+
+// ── Flash de evento ─────────────────────────────────────────────
+function flashEvent(text, type) {
+  const el = document.getElementById('eventFlash');
+  el.textContent = text;
+  el.className = 'event-flash ' + type + ' show';
+  setTimeout(() => { el.className = 'event-flash ' + type; }, 2200);
+}
+
+// ── Endpoint de comentarios: /api/chess/comment ─────────────────
+// El chess_bridge puede hacer POST aquí con el comentario del LLM
+// para que aparezca en pantalla sin esperar al poll.
+// Alternativa: el Dashboard hace SSE al overlay.
+async function pollComment() {
+  try {
+    const r = await fetch(API + '/api/chess/last_comment');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.comment && d.comment !== lastComment) {
+      lastComment = d.comment;
+      const bubble = document.getElementById('commentBubble');
+      document.getElementById('commentText').textContent = d.comment;
+      bubble.classList.add('visible');
+      clearTimeout(commentTimer);
+      commentTimer = setTimeout(() => bubble.classList.remove('visible'), 6000);
+    }
+  } catch(e) {}
+}
+
+// ── Init ─────────────────────────────────────────────────────────
+initBoard();
+pollState();
+setInterval(pollState,   POLL);
+setInterval(pollComment, POLL);
+setInterval(loadLeaderboard, LB_REFRESH);
+loadLeaderboard();
+</script>
+</body>
+</html>

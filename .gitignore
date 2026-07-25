@@ -1,0 +1,49 @@
+# Config Files with Secrets
+config.yaml
+
+# Byte-compiled / Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & IDEs
+.env
+.venv
+env/
+venv/
+ENV/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Databases & Runtime State
+*.db
+*.sqlite
+data/*.db
+data/*.sqlite
+data/chroma_db/
+data/chess_scores.db
+data/aiko_browser_profile/
+memories/*.json
+events/stream_events.json
+gpt_sovits_server.log
+
+# Datasets & Training Data
+dataset_aiko/
+
+# Logs & Temporary Files
+*.log
+tmp/
+temp/
+*.tmp
+*.wav
+*.mp3
+!aiko_ref.mp3
+
+# Voice Models & Heavy Binaries
+voices/*.onnx
+voices/*.onnx.json
+live2d_viewer/models/*
+!live2d_viewer/models/.gitkeep
